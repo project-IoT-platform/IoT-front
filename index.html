@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#05080f">
+  <title>IoT Platform</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!--
+    ИЗМЕНЕНО (дизайн): эмодзи заменены на inline-SVG в стиле lucide. Все иконки лежат в одном спрайте ниже
+    и вставляются так:  <svg class="i"><use href="#i-имя"/></svg>
+    Из JS (app.js) иконки создаёт функция icon('имя').
+    Декоративные иллюстрации: <svg class="ill"><use href="#ill-network"/></svg>
+  -->
+  <svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="g-neon" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="320" y2="240">
+        <stop offset="0" stop-color="#22e4ff"/>
+        <stop offset="1" stop-color="#a06bff"/>
+      </linearGradient>
+      <filter id="f-glow" x="-60%" y="-60%" width="220%" height="220%">
+        <feGaussianBlur stdDeviation="3" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+
+    <!-- ===== иконки (24x24, штрих 2, как у lucide) ===== -->
+    <symbol id="i-radio" viewBox="0 0 24 24"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+    <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+    <symbol id="i-thermometer" viewBox="0 0 24 24"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></symbol>
+    <symbol id="i-droplets" viewBox="0 0 24 24"><path d="M7 16.3c2.2 0 4-1.83 4-4.05 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.76S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z"/><path d="M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect width="16" height="10" x="2" y="7" rx="2" ry="2"/><line x1="22" x2="22" y1="11" y2="13"/><line x1="6" x2="6" y1="11" y2="13"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+
+    <!-- ===== декоративные иллюстрации ===== -->
+    <!-- сеть устройств вокруг хаба -->
+    <symbol id="ill-network" viewBox="0 0 320 240">
+      <g fill="none" stroke="url(#g-neon)" stroke-linecap="round">
+        <circle cx="160" cy="120" r="52" stroke-width="1" opacity=".35"/>
+        <circle cx="160" cy="120" r="88" stroke-width="1" opacity=".22" stroke-dasharray="2 8"/>
+        <path stroke-width="1.5" opacity=".6" d="M160 120 60 52M160 120 268 62M160 120 48 172M160 120 258 186M160 120V26M160 120v92"/>
+        <path stroke-width="1.2" opacity=".35" d="M60 52 48 172M268 62l-10 124M160 26 60 52M160 26l108 36"/>
+      </g>
+      <g filter="url(#f-glow)">
+        <circle cx="160" cy="120" r="28" fill="#08101f" stroke="url(#g-neon)" stroke-width="2"/>
+        <rect x="148" y="108" width="24" height="24" rx="4" fill="none" stroke="url(#g-neon)" stroke-width="1.6"/>
+        <path d="M154 102v6M160 102v6M166 102v6M154 132v6M160 132v6M166 132v6M142 114h6M142 126h6M172 114h6M172 126h6" stroke="url(#g-neon)" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+        <g fill="#08101f" stroke="url(#g-neon)" stroke-width="1.8">
+          <circle cx="60" cy="52" r="10"/><circle cx="268" cy="62" r="10"/><circle cx="48" cy="172" r="10"/>
+          <circle cx="258" cy="186" r="10"/><circle cx="160" cy="26" r="9"/><circle cx="160" cy="212" r="9"/>
+        </g>
+        <g fill="#22e4ff"><circle cx="60" cy="52" r="3.5"/><circle cx="258" cy="186" r="3.5"/><circle cx="160" cy="26" r="3"/></g>
+        <g fill="#a06bff"><circle cx="268" cy="62" r="3.5"/><circle cx="48" cy="172" r="3.5"/><circle cx="160" cy="212" r="3"/></g>
+      </g>
+    </symbol>
+    <!-- плата без устройств -->
+    <symbol id="ill-empty" viewBox="0 0 200 140">
+      <g fill="none" stroke="url(#g-neon)" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="50" y="30" width="100" height="80" rx="10" stroke-width="1.8" stroke-dasharray="5 6" opacity=".7"/>
+        <path stroke-width="1.6" opacity=".55" d="M70 30V16M90 30V16M110 30V16M130 30V16M70 110v14M90 110v14M110 110v14M130 110v14M50 55H36M50 75H36M50 95H36M150 55h14M150 75h14M150 95h14"/>
+      </g>
+      <g filter="url(#f-glow)" fill="none" stroke="url(#g-neon)" stroke-width="2.4" stroke-linecap="round">
+        <path d="M100 58v34M83 75h34"/>
+      </g>
+    </symbol>
+    <!-- письмо и сигнал -->
+    <symbol id="ill-mail" viewBox="0 0 200 140">
+      <g filter="url(#f-glow)" fill="none" stroke="url(#g-neon)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="46" y="42" width="108" height="72" rx="10" fill="#08101f"/>
+        <path d="m50 50 50 36 50-36"/>
+        <path d="M70 20a44 44 0 0 1 60 0" opacity=".6"/>
+        <path d="M82 30a28 28 0 0 1 36 0"/>
+      </g>
+      <circle cx="148" cy="46" r="7" fill="#ff4d94" filter="url(#f-glow)"/>
+    </symbol>
+  </svg>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Экран 1: вход / регистрация -->
+  <section id="screen-auth" class="screen center" hidden>
+    <div class="auth-shell">
+      <div class="auth-hero" aria-hidden="true">
+        <svg class="ill ill-hero"><use href="#ill-network"/></svg>
+      </div>
+      <div class="card auth-card">
+        <div class="brand">
+          <span class="brand-logo"><svg class="i"><use href="#i-radio"/></svg></span>
+          <div>
+            <h1>IoT Platform</h1>
+            <p class="muted">Устройства, состояние и уведомления в одном месте</p>
+          </div>
+        </div>
+        <form id="login-form" novalidate>
+          <label class="field"><span>Email</span>
+            <input id="auth-email" type="email" autocomplete="email" placeholder="you@example.com" required>
+          </label>
+          <label class="field"><span>Пароль</span>
+            <input id="auth-password" type="password" autocomplete="current-password" placeholder="Минимум 8 символов" required>
+          </label>
+          <div class="actions-row start">
+            <button type="submit" class="btn primary">Войти</button>
+            <button id="register-btn" type="button" class="btn">Зарегистрироваться</button>
+          </div>
+        </form>
+        <p id="auth-message" class="message" hidden></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Экран 2: подтверждение ID -->
+  <section id="screen-confirm" class="screen center" hidden>
+    <div class="card auth-card">
+      <div class="brand">
+        <span class="brand-logo"><svg class="i"><use href="#i-mail"/></svg></span>
+        <div>
+          <h2>Подтверждение</h2>
+          <p class="muted">Мы отправили письмо с ID для подтверждения регистрации. Введите его ниже.</p>
+        </div>
+      </div>
+      <label class="field"><span>ID из письма</span>
+        <input id="confirm-id" type="text" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+      </label>
+      <p id="confirm-message" class="message" hidden></p>
+      <div class="actions-row">
+        <button id="confirm-cancel" type="button" class="btn">Отмена</button>
+        <button id="confirm-submit" type="button" class="btn primary">Подтвердить</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Экран 3: главная -->
+  <section id="screen-main" hidden>
+    <header class="topbar">
+      <button id="menu-btn" type="button" class="icon-btn" aria-label="Меню" aria-expanded="false" aria-controls="sidebar">
+        <span class="burger"><i></i><i></i><i></i></span>
+      </button>
+      <span id="topbar-title" class="topbar-title">Устройства</span>
+      <span id="topbar-email" class="topbar-email"></span>
+    </header>
+
+    <div id="scrim" class="scrim"></div>
+
+    <aside id="sidebar" class="sidebar" aria-label="Навигация">
+      <div class="sidebar-head">
+        <span class="brand-logo"><svg class="i"><use href="#i-radio"/></svg></span>
+        <div class="sidebar-user">
+          <strong>IoT Platform</strong>
+          <span id="user-email" class="muted">…</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <button type="button" class="nav-item" data-view="devices"><svg class="i"><use href="#i-cpu"/></svg>Устройства</button>
+        <!-- НОВОЕ: вкладка только для админов; JS показывает её, если role === 'ADMIN' -->
+        <button id="nav-users" type="button" class="nav-item" data-view="users" hidden><svg class="i"><use href="#i-users"/></svg>Пользователи</button>
+        <button type="button" class="nav-item" data-view="profile"><svg class="i"><use href="#i-user"/></svg>Профиль</button>
+        <button type="button" class="nav-item" data-view="notifications"><svg class="i"><use href="#i-bell"/></svg>Уведомления</button>
+        <button type="button" class="nav-item" data-view="about"><svg class="i"><use href="#i-info"/></svg>Описание</button>
+        <button type="button" class="nav-item nav-danger" data-action="logout"><svg class="i"><use href="#i-log-out"/></svg>Выйти</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <!-- Устройства -->
+      <div id="view-devices" class="view">
+        <div class="toolbar">
+          <div>
+            <h2>Устройства</h2>
+            <p class="muted">Ваши зарегистрированные устройства</p>
+          </div>
+          <button id="add-device-btn" type="button" class="btn primary"><svg class="i"><use href="#i-plus"/></svg>Добавить устройство</button>
+        </div>
+
+        <!-- ИЗМЕНЕНО: поиск по названию, без пагинации -->
+        <form id="search-form" class="search" novalidate>
+          <span class="search-ico" aria-hidden="true"><svg class="i"><use href="#i-search"/></svg></span>
+          <input id="search-input" type="text" placeholder="Поиск по названию устройства" autocomplete="off" spellcheck="false" aria-label="Поиск по названию устройства">
+          <button id="search-clear" type="button" class="icon-btn small" aria-label="Сбросить поиск" hidden><svg class="i"><use href="#i-x"/></svg></button>
+          <button type="submit" class="btn">Найти</button>
+        </form>
+
+        <div id="devices-empty" class="empty" hidden>
+          <svg class="ill ill-empty" aria-hidden="true"><use href="#ill-empty"/></svg>
+          <p id="devices-empty-text"></p>
+        </div>
+        <div id="devices-grid" class="grid"></div>
+        <div class="more-wrap">
+          <button id="more-btn" type="button" class="btn" hidden>Показать ещё</button>
+        </div>
+      </div>
+
+      <!-- НОВОЕ: Пользователи (только админ) -->
+      <div id="view-users" class="view" hidden>
+        <div class="toolbar">
+          <div>
+            <h2>Пользователи</h2>
+            <p class="muted">Все аккаунты платформы</p>
+          </div>
+        </div>
+        <form id="users-search-form" class="search" novalidate>
+          <span class="search-ico" aria-hidden="true"><svg class="i"><use href="#i-search"/></svg></span>
+          <input id="users-search-input" type="text" placeholder="Поиск по email" autocomplete="off" spellcheck="false" aria-label="Поиск пользователей по email">
+          <button id="users-search-clear" type="button" class="icon-btn small" aria-label="Сбросить поиск" hidden><svg class="i"><use href="#i-x"/></svg></button>
+          <button type="submit" class="btn">Найти</button>
+        </form>
+        <div id="users-empty" class="empty" hidden>
+          <svg class="ill ill-empty" aria-hidden="true"><use href="#ill-empty"/></svg>
+          <p id="users-empty-text"></p>
+        </div>
+        <div id="users-list" class="users"></div>
+        <div class="more-wrap">
+          <button id="users-more-btn" type="button" class="btn" hidden>Показать ещё</button>
+        </div>
+      </div>
+
+      <!-- Профиль -->
+      <div id="view-profile" class="view" hidden>
+        <div class="toolbar"><div><h2>Профиль</h2><p class="muted">Данные вашего аккаунта</p></div></div>
+        <div class="panel">
+          <dl id="profile-card" class="kv"></dl>
+          <div id="profile-actions" class="actions-row start">
+            <button id="edit-profile" type="button" class="btn">Изменить данные</button>
+            <button id="delete-account" type="button" class="btn danger"><svg class="i"><use href="#i-trash"/></svg>Удалить аккаунт</button>
+          </div>
+
+          <form id="profile-form" novalidate hidden>
+            <h3>Изменение данных</h3>
+            <label class="field"><span>Имя пользователя</span>
+              <input id="prof-username" type="text" autocomplete="off">
+            </label>
+            <label class="field"><span>Телефон</span>
+              <input id="prof-phone" type="tel" autocomplete="off">
+            </label>
+            <label class="field"><span>Дата рождения</span>
+              <input id="prof-dob" type="date">
+            </label>
+            <label class="field"><span>Новый пароль (пусто — не менять)</span>
+              <input id="prof-password" type="password" autocomplete="new-password">
+            </label>
+            <p id="profile-message" class="message" hidden></p>
+            <div class="actions-row start">
+              <button type="submit" class="btn primary">Сохранить</button>
+              <button id="profile-cancel" type="button" class="btn">Отмена</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Уведомления -->
+      <div id="view-notifications" class="view" hidden>
+        <div class="toolbar with-ill">
+          <div><h2>Уведомления</h2><p class="muted">Где и как часто вы получаете оповещения</p></div>
+          <svg class="ill ill-side" aria-hidden="true"><use href="#ill-mail"/></svg>
+        </div>
+
+        <!-- НОВОЕ: два окна настройки частоты. Поля внутри заполняет app.js -->
+        <div class="channels">
+          <section class="panel channel" data-channel="email">
+            <div class="channel-head">
+              <span class="chip"><svg class="i"><use href="#i-mail"/></svg></span>
+              <div><h3>Email</h3><p id="email-target" class="muted small"></p></div>
+            </div>
+            <label class="field"><span>Как часто присылать</span>
+              <select id="email-freq"></select>
+            </label>
+            <div id="email-custom" class="custom-interval" hidden>
+              <input id="email-custom-value" type="number" min="1" step="1" inputmode="numeric" aria-label="Интервал для email">
+              <select id="email-custom-unit" aria-label="Единица времени для email">
+                <option value="60">минут</option><option value="3600">часов</option><option value="86400">дней</option>
+              </select>
+            </div>
+            <p id="email-hint" class="muted small"></p>
+            <p id="email-message" class="message" hidden></p>
+            <div class="actions-row start"><button id="email-save" type="button" class="btn primary">Сохранить</button></div>
+          </section>
+
+          <section class="panel channel" data-channel="telegram">
+            <div class="channel-head">
+              <span class="chip"><svg class="i"><use href="#i-send"/></svg></span>
+              <div><h3>Telegram</h3><p class="muted small">Подключите бота для оповещений</p></div>
+            </div>
+            <label class="field"><span>Как часто присылать</span>
+              <select id="telegram-freq"></select>
+            </label>
+            <div id="telegram-custom" class="custom-interval" hidden>
+              <input id="telegram-custom-value" type="number" min="1" step="1" inputmode="numeric" aria-label="Интервал для Telegram">
+              <select id="telegram-custom-unit" aria-label="Единица времени для Telegram">
+                <option value="60">минут</option><option value="3600">часов</option><option value="86400">дней</option>
+              </select>
+            </div>
+            <p id="telegram-hint" class="muted small"></p>
+            <p id="telegram-message" class="message" hidden></p>
+            <div class="actions-row start">
+              <button id="telegram-save" type="button" class="btn primary">Сохранить</button>
+              <a id="telegram-link" class="btn" target="_blank" rel="noopener noreferrer"><svg class="i"><use href="#i-send"/></svg>Открыть бота</a>
+            </div>
+            <p class="muted small">После перехода отправьте боту ID из письма о регистрации.</p>
+          </section>
+        </div>
+        <p class="muted small channels-note">Подтверждение регистрации и ответ на «Отправить статус» всегда приходят сразу, независимо от выбранной частоты.</p>
+      </div>
+
+      <!-- Описание -->
+      <div id="view-about" class="view" hidden>
+        <div class="toolbar with-ill">
+          <div><h2>Описание</h2></div>
+          <svg class="ill ill-side" aria-hidden="true"><use href="#ill-network"/></svg>
+        </div>
+        <div class="panel wide"><p id="about-text"></p></div>
+
+        <!-- НОВОЕ: легенда типов телеметрии. Таблица заполняется из TELEMETRY_TYPES в app.js -->
+        <div class="panel wide legend">
+          <h3>Типы телеметрии и единицы измерения</h3>
+          <div class="table-scroll">
+            <table id="types-table">
+              <thead><tr><th>Тип</th><th>Параметр</th><th>Единица</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+  </section>
+
+  <!-- Модалка: новое устройство -->
+  <dialog id="add-dialog">
+    <form id="add-form" novalidate>
+      <h3>Новое устройство</h3>
+      <label class="field"><span>Название</span>
+        <input id="dev-name" type="text" autocomplete="off" required>
+      </label>
+      <label class="field"><span>Производитель</span>
+        <input id="dev-manufacturer" type="text" autocomplete="off">
+      </label>
+      <p id="add-message" class="message" hidden></p>
+      <div class="actions-row">
+        <button id="add-cancel" type="button" class="btn">Отмена</button>
+        <button type="submit" class="btn primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Модалка: устройство.
+       ИЗМЕНЕНО: кнопка ручного переключения состояния убрана, состояние управляется автоматически -->
+  <dialog id="device-dialog">
+    <h3 id="dd-title"></h3>
+    <dl id="dd-card" class="kv"></dl>
+    <p class="muted small">Состояние устройства определяется автоматически.</p>
+    <div class="actions-row wrap">
+      <button id="dd-status" type="button" class="btn"><svg class="i"><use href="#i-send"/></svg>Отправить статус</button>
+      <button id="dd-delete" type="button" class="btn danger"><svg class="i"><use href="#i-trash"/></svg>Удалить</button>
+      <button id="dd-close" type="button" class="btn">Закрыть</button>
+    </div>
+  </dialog>
+
+  <!-- НОВОЕ: модалка телеметрии одного типа (график, норма, средние) -->
+  <dialog id="tm-dialog" class="wide-dialog">
+    <div class="tm-head">
+      <span id="tm-ico" class="tile-ico"></span>
+      <div class="tm-title">
+        <h3 id="tm-title"></h3>
+        <p id="tm-sub" class="muted small"></p>
+      </div>
+      <span class="live"><i></i>Обновляется</span>
+      <button id="tm-close" type="button" class="icon-btn" aria-label="Закрыть"><svg class="i"><use href="#i-x"/></svg></button>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><span class="stat-label">Текущее значение</span><strong id="tm-current">—</strong><small id="tm-current-note" class="muted"></small></div>
+      <div class="stat"><span class="stat-label">Норма</span><strong id="tm-norm">—</strong><small id="tm-norm-note" class="muted"></small></div>
+      <div class="stat"><span class="stat-label">Среднее за последний час</span><strong id="tm-avg-hour">—</strong><small id="tm-avg-hour-note" class="muted"></small></div>
+    </div>
+
+    <div id="tm-chart-wrap" class="chart-wrap">
+      <svg id="tm-chart" class="chart" role="img" aria-label="График показаний"></svg>
+      <div id="tm-tip" class="tip" hidden></div>
+      <p id="tm-empty" class="chart-empty" hidden>Показаний этого типа пока нет</p>
+    </div>
+
+    <form id="tm-since-form" class="since" novalidate>
+      <label class="field"><span>Среднее значение с указанного времени</span>
+        <input id="tm-since" type="datetime-local" step="60">
+      </label>
+      <button type="submit" class="btn"><svg class="i"><use href="#i-clock"/></svg>Узнать среднее</button>
+    </form>
+    <p id="tm-since-result" class="message" hidden></p>
+  </dialog>
+
+  <!-- Модалка: настройки (лимиты) устройства -->
+  <dialog id="settings-dialog">
+    <form id="settings-form" novalidate>
+      <h3 id="st-title">Настройки устройства</h3>
+      <!-- ИЗМЕНЕНО: пустое поле или прочерк = ограничение не задано (раньше его нельзя было снять) -->
+      <p class="muted small">Пустое поле или «—» означает, что ограничение не задано.</p>
+      <label class="field"><span>Нижняя граница заряда батареи, %</span>
+        <input id="st-battery" type="text" inputmode="numeric" autocomplete="off" placeholder="—">
+      </label>
+      <div class="sub-head">
+        <h4>Границы телеметрии</h4>
+        <button id="st-add" type="button" class="btn small"><svg class="i"><use href="#i-plus"/></svg>Тип</button>
+      </div>
+      <datalist id="st-types"></datalist>
+      <div id="st-list" class="limits"></div>
+      <p id="st-empty" class="muted small" hidden>Границы телеметрии не заданы.</p>
+      <p class="muted small">Строка удаляется крестиком; изменение вступит в силу после сохранения.</p>
+      <p id="st-message" class="message" hidden></p>
+      <div class="actions-row">
+        <button id="st-cancel" type="button" class="btn">Отмена</button>
+        <button type="submit" class="btn primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
