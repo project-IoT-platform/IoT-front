@@ -1,6 +1,6 @@
 const TELEGRAM_BOT_URL = 'https://t.me/IoT_NotifierBot';
 
-// Адрес API (CORS на бэкенде разрешает страницы с localhost:3000 и 127.0.0.1:3000)
+// Адрес API (CORS на бэкенде разрешает страницы с localhost:3001 и 127.0.0.1:3001)
 const API = 'http://localhost:8082';
 
 // 0.0.0.0 — это «слушать на всех интерфейсах», а не адрес для браузера: переходим на localhost
@@ -80,6 +80,7 @@ const usrState = { items: [], offset: 0, hasMore: false, search: null, ticket: 0
 
 function showScreen(name) {
   for (const [key, node] of Object.entries(screens)) node.hidden = key !== name;
+  $('screen-startup').hidden = true;
 }
 
 let toastTimer = null;
@@ -106,8 +107,8 @@ function fail(err, userText = 'Не удалось связаться с сер�
 }
 
 /** Запрос к API. HTTP-ошибки не бросают исключение, возвращается {status, ok, data}. */
-async function api(method, path, body) {
-  const options = { method, headers: {} };
+async function api(method, path, body, signal) {
+  const options = { method, headers: {}, signal };
   if (body !== undefined) {
     options.headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(body);
@@ -237,19 +238,17 @@ function fillKv(dl, rows) {
   }
 }
 
-function stateBadge(state) {
-  const span = document.createElement('span');
-  span.className = 'badge ' + (state === 'ON' ? 'on' : 'off');
-  span.textContent = dash(state);
-  return span;
-}
-
 /* ---------------- сессия ---------------- */
 
 const getUserId = () => localStorage.getItem('userId');
 
 function logout() {
   localStorage.removeItem('userId');
+  devState.ticket++;
+  devState.items = [];
+  workspace.id = null;
+  workspace.renderedDevice = null;
+  workspace.ready = false;
   sessionStorage.removeItem('pendingUserId');
   currentDevice = null;
   settingsDevice = null;
@@ -261,8 +260,25 @@ function logout() {
   openAuth();
 }
 
+let authMode = 'login';
+function setAuthMode(mode) {
+  authMode = mode;
+  const registering = mode === 'register';
+  $('auth-title').textContent = registering ? 'Регистрация' : 'Вход в IoT Core';
+  $('auth-subtitle').textContent = registering ? 'Создайте аккаунт в IoT Core.' : 'Войдите, чтобы открыть свои устройства.';
+  $('auth-submit').textContent = registering ? 'Зарегистрироваться' : 'Войти';
+  $('register-btn').textContent = registering ? 'Вернуться ко входу' : 'Зарегистрироваться';
+  $('auth-repeat-field').hidden = !registering;
+  $('forgot-password').hidden = registering;
+  $('auth-password').autocomplete = registering ? 'new-password' : 'current-password';
+  $('auth-password').value = '';
+  $('auth-repeat').value = '';
+  setMessage($('auth-message'), '');
+}
+
 function openAuth(message, kind = 'error') {
   $('login-form').reset();
+  setAuthMode('login');
   setMessage($('auth-message'), message, kind);
   showScreen('auth');
 }
@@ -285,6 +301,7 @@ $('login-form').addEventListener('submit', async (e) => {
   setMessage($('auth-message'), '');
   const creds = readCredentials();
   if (!creds) return;
+  if (authMode === 'register') { await registerAccount(creds); return; }
 
   try {
     const r = await api('POST', '/api/login', creds);
@@ -293,7 +310,7 @@ $('login-form').addEventListener('submit', async (e) => {
       localStorage.setItem('userId', r.data.id);
       await enterMain();
     } else if (r.status === 401) {
-      setMessage($('auth-message'), 'Неверный email или пароль');
+      setMessage($('auth-message'), 'Неверная почта или пароль');
     } else if (r.status === 400) {
       setMessage($('auth-message'), formatErrors(r.data));
     } else {
@@ -305,15 +322,25 @@ $('login-form').addEventListener('submit', async (e) => {
   }
 });
 
-// Зарегистрироваться: POST /api/users
-$('register-btn').addEventListener('click', async () => {
-  setMessage($('auth-message'), '');
-  const creds = readCredentials();
-  if (!creds) return;
+$('register-btn').addEventListener('click', () => {
+  setAuthMode(authMode === 'login' ? 'register' : 'login');
+  $('auth-email').focus();
+});
+
+async function registerAccount(creds) {
+  if (creds.password.length < 8) {
+    setMessage($('auth-message'), 'Пароль должен содержать минимум 8 символов');
+    return;
+  }
+  if (creds.password !== $('auth-repeat').value) {
+    setMessage($('auth-message'), 'Пароли не совпадают');
+    return;
+  }
 
   try {
     const r = await api('POST', '/api/users', creds);
-    $('auth-password').value = ''; // пароль нигде не храним
+    $('auth-password').value = '';
+    $('auth-repeat').value = '';
     if (r.status === 201 && r.data && r.data.id) {
       sessionStorage.setItem('pendingUserId', r.data.id);
       $('confirm-id').value = '';
@@ -334,7 +361,7 @@ $('register-btn').addEventListener('click', async () => {
   } catch (err) {
     fail(err);
   }
-});
+}
 
 /* ---------------- экран 2: подтверждение ID ---------------- */
 
@@ -350,34 +377,20 @@ async function cancelPending() {
   }
 }
 
-$('confirm-submit').addEventListener('click', async () => {
+$('confirm-submit').addEventListener('click', () => {
   const id = $('confirm-id').value.trim();
   const pending = sessionStorage.getItem('pendingUserId');
   if (!pending) { openAuth(); return; }
   if (!id) { setMessage($('confirm-message'), 'Введите ID'); return; }
 
-  // чужой ID подтверждать нельзя: иначе по известному ID можно было бы войти без пароля
+  // Сверяем ID из письма перед возвратом к форме входа.
   if (id.toLowerCase() !== pending.toLowerCase()) {
     setMessage($('confirm-message'), 'Неверный ID. Проверьте письмо и попробуйте ещё раз');
     return;
   }
 
-  try {
-    const r = await api('POST', '/api/users/' + encodeURIComponent(pending) + '/confirm');
-    if (r.status === 200) {
-      localStorage.setItem('userId', pending);
-      sessionStorage.removeItem('pendingUserId');
-      await enterMain();
-    } else if (r.status === 404) {
-      sessionStorage.removeItem('pendingUserId');
-      openAuth('Пользователь не найден. Зарегистрируйтесь заново');
-    } else {
-      console.error('Подтверждение: ответ', r.status);
-      toast(formatErrors(r.data, 'Не удалось подтвердить регистрацию'), true);
-    }
-  } catch (err) {
-    fail(err);
-  }
+  sessionStorage.removeItem('pendingUserId');
+  openAuth('ID совпадает. Войдите с почтой и паролем.', 'ok');
 });
 
 $('confirm-cancel').addEventListener('click', async () => {
@@ -390,8 +403,10 @@ $('confirm-cancel').addEventListener('click', async () => {
 async function enterMain() {
   const userId = getUserId();
   if (!userId) { openAuth(); return; }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
   try {
-    const r = await api('GET', '/api/users/' + encodeURIComponent(userId));
+    const r = await api('GET', '/api/users/' + encodeURIComponent(userId), undefined, controller.signal);
     if (r.status === 200 && r.data) {
       if (r.data.isConfirmed === false) {
         logout();
@@ -410,13 +425,16 @@ async function enterMain() {
     }
   } catch (err) {
     fail(err);
+  } finally {
+    clearTimeout(timeout);
   }
   showScreen('main');
   showView('devices');
 }
 
 function setUserEmail(email) {
-  $('user-email').textContent = dash(email);
+  $('user-email').textContent = email || '';
+  $('sidebar-name').textContent = currentUser?.username || 'Профиль';
   $('topbar-email').textContent = dash(email);
 }
 
@@ -445,15 +463,26 @@ $('sidebar').addEventListener('click', (e) => {
   else if (btn.dataset.action === 'logout') logout();
 });
 
+$('top-nav').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-view]');
+  if (button) showView(button.dataset.view);
+});
+
+$('sidebar-account').addEventListener('click', () => showView('profile'));
+
 function showView(name) {
   if (name === 'users' && !isAdmin()) name = 'devices';   // НОВОЕ: чужим вкладку не открываем
   for (const [key, node] of Object.entries(views)) node.hidden = key !== name;
   document.querySelectorAll('.nav-item[data-view]').forEach((b) => {
-    b.classList.toggle('active', b.dataset.view === name);
+    const active = b.dataset.view === name;
+    b.classList.toggle('active', active);
+    if (active) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
   });
   $('topbar-title').textContent = VIEW_TITLES[name] || '';
   closeDrawer();
-  if (name === 'devices') { loadDevices(); startTilesPolling(); } else { stopTilesPolling(); }
+  window.scrollTo(0, 0);
+  if (name === 'devices') { syncRooms(); loadDevices(); startTilesPolling(); } else { stopTilesPolling(); }
   if (name === 'users') loadUsers();
   if (name === 'profile') loadProfile();
   if (name === 'notifications') loadNotificationPrefs();
@@ -475,6 +504,25 @@ async function loadDevices(append = false) {
     devState.hasMore = false;
   }
 
+  const room = selectedRoom();
+  const ticket = ++devState.ticket;
+  if (room) {
+    try {
+      const devices = await readDeviceCatalogue(userId, () => ticket === devState.ticket);
+      if (ticket !== devState.ticket || userId !== getUserId()) return;
+      const memberIds = new Set(room.devices);
+      const query = devState.search?.toLocaleLowerCase() ?? '';
+      devState.items = devices.filter(device => memberIds.has(device.deviceId) &&
+        (device.name ?? '').toLocaleLowerCase().includes(query));
+      renderDevices();
+    } catch (error) {
+      if (ticket === devState.ticket) {
+        renderDevices();
+        fail(error, 'Не удалось загрузить устройства группы');
+      }
+    }
+    return;
+  }
   const params = new URLSearchParams({ userId });
   if (devState.search) {
     params.set('search', devState.search);
@@ -483,7 +531,6 @@ async function loadDevices(append = false) {
     params.set('offset', String(devState.offset));
   }
 
-  const ticket = ++devState.ticket;   // ответ на устаревший запрос (быстрый набор в поиске) отбрасываем
   try {
     const r = await api('GET', '/api/devices?' + params.toString());
     if (ticket !== devState.ticket) return;
@@ -521,15 +568,6 @@ function batteryNode(level) {
   return wrap;
 }
 
-function row(label, valueNode) {
-  const div = document.createElement('div');
-  div.className = 'dc-row';
-  const l = document.createElement('span');
-  l.textContent = label;
-  div.append(l, valueNode);
-  return div;
-}
-
 function textNode(text) {
   const s = document.createElement('span');
   s.textContent = text;
@@ -546,65 +584,383 @@ function actionButton(text, cls, handler, iconName) {
   return b;
 }
 
-function renderDevices() {
-  const grid = $('devices-grid');
-  grid.replaceChildren();
+const workspace = { id: null, ticket: 0, chartTicket: 0, averageTicket: 0, inspectorTicket: 0, renderedDevice: null, limits: [], ready: false };
 
-  const empty = $('devices-empty');
-  if (devState.items.length === 0) {
-    $('devices-empty-text').textContent = devState.search
-      ? 'Устройств с таким названием не найдено.'
-      : 'У вас пока нет устройств. Добавьте первое.';
-    empty.hidden = false;
-  } else {
-    empty.hidden = true;
-  }
-  $('more-btn').hidden = !devState.hasMore;
-
-  devState.items.forEach((d, i) => {
-    const card = document.createElement('article');
-    card.className = 'device-card';
-    card.style.animationDelay = Math.min(i, 9) * 40 + 'ms';
-
-    const head = document.createElement('div');
-    head.className = 'dc-head';
-    const name = document.createElement('h3');
-    name.className = 'dc-name';
-    name.textContent = dash(d.name);
-    head.append(name, stateBadge(d.state));
-
-    // НОВОЕ: плитки по типам телеметрии (заполняются отдельным запросом)
-    const tiles = document.createElement('div');
-    tiles.className = 'tiles';
-    tiles.dataset.deviceId = d.deviceId;
-
-    const meta = document.createElement('div');
-    meta.className = 'dc-meta';
-    const idBox = document.createElement('span');
-    idBox.className = 'dc-id';
-    const code = document.createElement('code');
-    code.textContent = d.deviceId;
-    code.title = d.deviceId;
-    idBox.append(code, copyButton(d.deviceId));
-    meta.append(
-      row('Заряд', batteryNode(d.batteryLevel)),
-      row('Производитель', textNode(dash(d.manufacturer))),
-      row('ID', idBox)
-    );
-
-    const actions = document.createElement('div');
-    actions.className = 'dc-actions';
-    actions.append(
-      actionButton('Открыть', '', () => openDevice(d.deviceId), 'cpu'),
-      actionButton('Настройки', '', () => openSettings(d), 'sliders'),
-      actionButton('Удалить', 'danger', () => deleteDevice(d.deviceId, d.name), 'trash')
-    );
-
-    card.append(head, tiles, meta, actions);
-    grid.append(card);
-    loadTiles(tiles, d);
-  });
+function activeDevice() {
+  return devState.items.find(device => device.deviceId === workspace.id);
 }
+
+function renderDevices() {
+  const list = $('devices-grid');
+  const room = selectedRoom();
+  list.replaceChildren();
+  const device = activeDevice() || devState.items[0];
+  workspace.id = device?.deviceId ?? null;
+  $('devices-empty').hidden = Boolean(device);
+  $('devices-empty-text').textContent = devState.search
+    ? 'Устройств с таким названием не найдено.'
+    : selectedRoom() ? 'В этой группе пока нет устройств.' : 'У вас пока нет устройств.';
+  $('empty-room-add').hidden = !selectedRoom() || Boolean(device) || Boolean(devState.search);
+  $('more-btn').hidden = !devState.hasMore;
+  $('device-workspace').hidden = !device;
+  for (const item of devState.items) {
+    const selected = item.deviceId === workspace.id;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'device-list-item';
+    button.setAttribute('aria-pressed', String(selected));
+    const label = document.createElement('span');
+    const name = document.createElement('strong');
+    name.textContent = dash(item.name);
+    const id = document.createElement('code');
+    id.textContent = item.deviceId;
+    id.title = item.deviceId;
+    label.append(name, id);
+    button.append(icon('cpu'), label);
+    button.addEventListener('click', () => {
+      if (selected) return;
+      workspace.id = item.deviceId;
+      renderDevices();
+      list.querySelector('[aria-pressed="true"]')?.focus();
+    });
+    if (room) {
+      const row = document.createElement('div');
+      row.className = 'room-device-row';
+      const remove = actionButton('', 'room-device-remove', () => removeRoomDevice(room, item), 'x');
+      remove.setAttribute('aria-label', 'Убрать «' + dash(item.name) + '» из группы');
+      remove.title = 'Убрать из группы';
+      row.append(button, remove);
+      list.append(row);
+    } else {
+      list.append(button);
+    }
+  }
+  const changedDevice = workspace.renderedDevice !== workspace.id;
+  if (changedDevice) {
+    workspace.renderedDevice = workspace.id;
+    hideInspector();
+    resetAverage();
+    workspace.limits = [];
+    if (device) loadChartLimits(device.deviceId);
+  }
+  if (!device) return;
+
+  $('workspace-device').textContent = dash(device.name);
+  const id = document.createElement('code');
+  id.textContent = device.deviceId;
+  $('workspace-id').replaceChildren(id, copyButton(device.deviceId));
+  $('workspace-actions').replaceChildren(
+    actionButton('Настройки', '', () => openSettings(device), 'sliders')
+  );
+  if (!changedDevice && workspace.ready) return;
+  workspace.ready = false;
+  $('workspace-type').replaceChildren();
+  $('workspace-reading-cards').replaceChildren();
+  $('workspace-chart').replaceChildren();
+  $('workspace-stats').replaceChildren();
+  $('workspace-chart-message').hidden = false;
+  $('workspace-chart-message').textContent = 'Загружаем показания…';
+  $('workspace-since-form').querySelector('button').disabled = true;
+  refreshWorkspace(device);
+}
+
+async function loadChartLimits(id) {
+  try {
+    const r = await api('GET', '/api/devices/' + encodeURIComponent(id) + '/limits');
+    if (workspace.id !== id || !r.ok || !r.data) return;
+    workspace.limits = r.data.telemetryLimits ?? r.data.telemetry ?? [];
+    if (workspace.ready && workspace.limits.length) refreshWorkspaceChart();
+  } catch {
+    // The graph remains available when limits cannot be loaded.
+  }
+}
+
+async function refreshWorkspace(device) {
+  const ticket = ++workspace.ticket;
+  try {
+    const r = await api('GET', '/api/devices/' + encodeURIComponent(device.deviceId) + '/telemetry/latest');
+    if (ticket !== workspace.ticket || workspace.id !== device.deviceId) return;
+    if (!r.ok || !Array.isArray(r.data)) throw new Error('Не удалось загрузить показания');
+    const readings = r.data;
+    const cards = $('workspace-reading-cards');
+    renderTiles(cards, readings);
+    const battery = document.createElement('div');
+    battery.className = 'workspace-battery';
+    battery.append(textNode('Заряд'), batteryNode(device.batteryLevel));
+    cards.append(battery);
+
+    const select = $('workspace-type');
+    const previous = select.value;
+    const types = readings.map(row => String(row.telemetryType)).sort((a, b) => Number(a) - Number(b));
+    select.replaceChildren(...types.map(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = typeInfo(Number(value)).name;
+      return option;
+    }));
+    if (types.includes(previous)) select.value = previous;
+    if (previous && previous !== select.value) resetAverage();
+    updateWorkspaceMetric();
+    select.disabled = types.length === 0;
+    $('workspace-since-form').querySelector('button').disabled = select.disabled;
+    workspace.ready = true;
+    refreshWorkspaceChart();
+  } catch (err) {
+    if (ticket !== workspace.ticket || workspace.id !== device.deviceId || workspace.ready) return;
+    $('workspace-chart-message').textContent = 'Не удалось загрузить показания';
+  }
+}
+
+function svgPart(tag, attrs, value) {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [name, attr] of Object.entries(attrs)) node.setAttribute(name, attr);
+  if (value !== undefined) node.textContent = value;
+  return node;
+}
+
+let chartGeometry;
+
+function drawWorkspaceChart(points, from, to, type, unit) {
+  const svg = $('workspace-chart');
+  svg.replaceChildren();
+  delete svg.dataset.pointIndex;
+  const min = Math.min(...points.map(point => point.value));
+  const max = Math.max(...points.map(point => point.value));
+  const limit = workspace.limits.find(row => Number(row.telemetryType) === Number(type));
+  const bounds = [['Мин. порог', limit?.lowerBound], ['Макс. порог', limit?.upperBound]]
+    .filter(([, value]) => Number.isFinite(value));
+  const lowValue = Math.min(min, ...bounds.map(([, value]) => value));
+  const highValue = Math.max(max, ...bounds.map(([, value]) => value));
+  const padding = Math.max((highValue - lowValue) * .12, .25);
+  const low = lowValue - padding;
+  const high = highValue + padding;
+  const x = time => 64 + (time - from) / (to - from) * 632;
+  const y = value => 218 - (value - low) / (high - low) * 196;
+  for (let i = 0; i <= 4; i++) {
+    const value = low + (high - low) * i / 4;
+    const line = y(value);
+    const time = from + (to - from) * i / 4;
+    svg.append(svgPart('line', {x1:64, y1:line, x2:696, y2:line, class:'workspace-gridline'}),
+      svgPart('text', {x:56, y:line+4, 'text-anchor':'end'}, fmtValue(value, unit)),
+      svgPart('text', {x:x(time), y:242, 'text-anchor':i === 4 ? 'end' : i === 0 ? 'start' : 'middle'},
+        new Date(time).toLocaleString('ru-RU', {
+          ...(new Date(from).toDateString() !== new Date(to).toDateString() ? {day:'2-digit', month:'2-digit'} : {}),
+          hour:'2-digit', minute:'2-digit'
+        })));
+  }
+  chartGeometry = {points, x, y, unit};
+  const defs = svgPart('defs', {});
+  const gradient = svgPart('linearGradient', {id:'workspace-area', x1:'0', y1:'0', x2:'0', y2:'1'});
+  gradient.append(svgPart('stop', {offset:'0%', 'stop-color':'#963dff','stop-opacity':'.66'}),
+    svgPart('stop', {offset:'100%', 'stop-color':'#963dff','stop-opacity':'.04'}));
+  defs.append(gradient);
+  const trace = points.map(point => x(point.time) + ',' + y(point.value)).join(' ');
+  svg.append(defs,
+    svgPart('polygon', {points: x(points[0].time) + ',218 ' + trace + ' ' + x(points.at(-1).time) + ',218', fill:'url(#workspace-area)'}),
+    svgPart('polyline', {points:trace, class:'workspace-trace'}),
+    svgPart('circle', {cx:x(points.at(-1).time), cy:y(points.at(-1).value), r:4, class:'workspace-point'}));
+  for (const [label, value] of bounds) {
+    const line = y(value);
+    svg.append(svgPart('line', {x1:64, y1:line, x2:696, y2:line, class:'workspace-threshold'}),
+      svgPart('text', {x:690, y:line-5, 'text-anchor':'end'}, label + ' ' + fmtValue(value, unit)));
+  }
+  const stats = $('workspace-stats');
+  const mean = points.reduce((sum, point) => sum + point.value, 0) / points.length;
+  stats.replaceChildren(...[['Мин.', min], ['Макс.', max], ['Среднее', mean]].map(([label, value]) => {
+    const cell = document.createElement('div');
+    const reading = document.createElement('strong');
+    reading.textContent = fmtValue(value, unit);
+    cell.append(textNode(label), reading);
+    return cell;
+  }));
+}
+
+async function refreshWorkspaceChart() {
+  const device = activeDevice();
+  if (!device) return;
+  const type = $('workspace-type').value;
+  const chart = $('workspace-chart');
+  const message = $('workspace-chart-message');
+  const ticket = ++workspace.chartTicket;
+  $('workspace-range-note').hidden = true;
+  $('workspace-point-tip').hidden = true;
+  chartGeometry = null;
+  if (type === '') {
+    chart.replaceChildren();
+    $('workspace-stats').replaceChildren();
+    message.hidden = false;
+    message.textContent = 'Показаний пока нет';
+    return;
+  }
+
+  try {
+    const path = '/api/devices/' + encodeURIComponent(device.deviceId) + '/telemetry';
+    const preset = $('workspace-period').querySelector(':checked');
+    const startInput = $('workspace-start');
+    const to = Date.now();
+    const from = startInput.value ? new Date(startInput.value).getTime() : to - Number(preset.value);
+    if (startInput.value && (!Number.isFinite(from) || from >= to)) {
+      chart.replaceChildren();
+      $('workspace-stats').replaceChildren();
+      message.hidden = false;
+      message.textContent = 'Укажите дату и время в прошлом';
+      return;
+    }
+    const r = await api('GET', path + '?' + new URLSearchParams({type, limit:'1000'}));
+    if (ticket !== workspace.chartTicket || workspace.id !== device.deviceId) return;
+    if (!r.ok || !Array.isArray(r.data)) throw new Error('Не удалось загрузить график');
+
+    const points = r.data.map(row => ({time: toDate(row.time).getTime(), value: Number(row.value)}))
+      .filter(point => point.time >= from && point.time <= to && Number.isFinite(point.value))
+      .sort((a, b) => a.time - b.time);
+    const note = $('workspace-range-note');
+    note.hidden = r.data.length < 1000 || points.length < 1000;
+    if (!note.hidden) note.textContent = 'График показывает до 1000 последних показаний за выбранный период.';
+    if (points.length) {
+      message.hidden = true;
+      drawWorkspaceChart(points, from, to, type, typeInfo(Number(type)).unit);
+    } else {
+      chart.replaceChildren();
+      $('workspace-stats').replaceChildren();
+      message.hidden = false;
+      message.textContent = 'За выбранный период показаний нет';
+    }
+  } catch (err) {
+    if (ticket !== workspace.chartTicket || workspace.id !== device.deviceId) return;
+    chart.replaceChildren();
+    $('workspace-stats').replaceChildren();
+    message.hidden = false;
+    message.textContent = 'Не удалось загрузить график';
+  }
+}
+
+function showWorkspacePoint(index) {
+  const {points, x, y, unit} = chartGeometry;
+  const point = points[index];
+  const svg = $('workspace-chart');
+  const old = svg.querySelector('.workspace-cursor');
+  old?.remove();
+  svg.append(svgPart('circle', {cx: x(point.time), cy: y(point.value), r: 5, class: 'workspace-cursor'}));
+  const tip = $('workspace-point-tip');
+  tip.textContent = fmtValue(point.value, unit) + ' · ' + formatDate(new Date(point.time));
+  tip.hidden = false;
+  tip.style.left = Math.min(82, Math.max(18, x(point.time) / 7.2)) + '%';
+  svg.dataset.pointIndex = String(index);
+}
+
+function hideWorkspacePoint() {
+  $('workspace-point-tip').hidden = true;
+  $('workspace-chart').querySelector('.workspace-cursor')?.remove();
+}
+
+$('workspace-chart').addEventListener('pointermove', event => {
+  if (!chartGeometry) return;
+  const svg = event.currentTarget;
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return;
+  const cursor = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+  const {points, x} = chartGeometry;
+  const nearest = points.reduce((best, point, index) =>
+    Math.abs(x(point.time) - cursor.x) < Math.abs(x(points[best].time) - cursor.x) ? index : best, 0);
+  showWorkspacePoint(nearest);
+});
+$('workspace-chart').addEventListener('pointerleave', hideWorkspacePoint);
+$('workspace-chart').addEventListener('blur', hideWorkspacePoint);
+$('workspace-chart').addEventListener('keydown', event => {
+  if (!chartGeometry || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  event.preventDefault();
+  const last = chartGeometry.points.length - 1;
+  const index = Number(event.currentTarget.dataset.pointIndex ?? last);
+  const next = Math.max(0, Math.min(last, index + (event.key === 'ArrowRight' ? 1 : -1)));
+  showWorkspacePoint(next);
+});
+
+const chartStart = $('workspace-start');
+const clearChartStart = $('workspace-start-clear');
+const chartPresets = $('workspace-period');
+let lastChartPreset = chartPresets.querySelector(':checked');
+
+function updateChartStart() {
+  const custom = chartStart.value !== '';
+  clearChartStart.hidden = !custom;
+  lastChartPreset.checked = !custom;
+  refreshWorkspaceChart();
+}
+
+chartStart.addEventListener('focus', () => {
+  chartStart.max = toLocalInput(new Date());
+});
+chartStart.addEventListener('change', updateChartStart);
+clearChartStart.addEventListener('click', () => {
+  chartStart.value = '';
+  updateChartStart();
+  chartStart.focus();
+});
+chartPresets.addEventListener('change', event => {
+  lastChartPreset = event.target;
+  chartStart.value = '';
+  updateChartStart();
+});
+function resetAverage() {
+  workspace.averageTicket++;
+  $('workspace-since').value = toLocalInput(new Date(Date.now() - 3600000));
+  setMessage($('workspace-since-result'), '');
+}
+
+function updateWorkspaceMetric() {
+  const selected = $('workspace-type').value;
+  const heading = selected ? 'История · ' + typeInfo(Number(selected)).name : 'История показаний';
+  $('workspace-chart-title').textContent = heading;
+  for (const tile of $('workspace-reading-cards').querySelectorAll('[data-type]')) {
+    tile.setAttribute('aria-pressed', String(tile.dataset.type === selected));
+  }
+}
+
+$('workspace-type').addEventListener('change', () => {
+  resetAverage();
+  updateWorkspaceMetric();
+  refreshWorkspaceChart();
+});
+$('workspace-since').addEventListener('input', () => {
+  workspace.averageTicket++;
+  setMessage($('workspace-since-result'), '');
+});
+
+/* среднее с выбранного времени */
+$('workspace-since-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const device = activeDevice();
+  const type = $('workspace-type').value;
+  if (!device || !type) return;
+  const ticket = ++workspace.averageTicket;
+  const out = $('workspace-since-result');
+  const value = $('workspace-since').value;
+  if (!value) { setMessage(out, 'Укажите время'); return; }
+  const since = new Date(value);   // datetime-local трактуется в часовом поясе браузера
+  if (Number.isNaN(since.getTime())) { setMessage(out, 'Некорректное время'); return; }
+  if (since.getTime() > Date.now()) { setMessage(out, 'Время не может быть в будущем'); return; }
+
+  setMessage(out, 'Рассчитываем среднее…', 'ok');
+  try {
+    const r = await api('GET', '/api/devices/' + encodeURIComponent(device.deviceId) +
+      `/telemetry/average?type=${Number(type)}&since=${encodeURIComponent(since.toISOString())}`);
+    if (ticket !== workspace.averageTicket) return;
+    if (r.status === 200 && r.data) {
+      const unit = typeInfo(Number(type)).unit;
+      const from = since.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+      if (r.data.average === null || r.data.average === undefined) {
+        setMessage(out, `С ${from} показаний нет`);
+      } else {
+        const n = Number(r.data.count) || 0;
+        setMessage(out, `Среднее с ${from}: ${fmtValue(Number(r.data.average), unit)} (${n} ${plural(n, 'показание', 'показания', 'показаний')})`, 'ok');
+      }
+    } else {
+      setMessage(out, formatErrors(r.data, 'Не удалось получить среднее'));
+    }
+  } catch (err) {
+    if (ticket === workspace.averageTicket) setMessage(out, 'Не удалось получить среднее');
+  }
+});
 
 function replaceInList(d) {
   const i = devState.items.findIndex((x) => x.deviceId === d.deviceId);
@@ -631,8 +987,8 @@ async function deleteDevice(id, name) {
 
 /* ---- НОВОЕ: плитки телеметрии в карточке ---- */
 
-/** Последние показания каждого типа: рисует плитки. Клик по плитке открывает модалку с графиком. */
-function renderTiles(box, device, list) {
+/** Плитки последних показаний переключают тип на встроенном графике. */
+function renderTiles(box, list) {
   box.replaceChildren();
   if (!list.length) {
     const none = document.createElement('div');
@@ -646,7 +1002,7 @@ function renderTiles(box, device, list) {
     const tile = document.createElement('button');
     tile.type = 'button';
     tile.className = 'tile';
-    tile.title = info.name + ': открыть график';
+    tile.title = info.name + ': показать на графике';
 
     const name = document.createElement('div');
     name.className = 'tile-name';
@@ -669,23 +1025,12 @@ function renderTiles(box, device, list) {
     time.textContent = Number.isNaN(when.getTime()) ? '' : timeAgo(when);
 
     tile.append(name, value, time);
-    tile.addEventListener('click', () => openTelemetry(device, item.telemetryType));
+    tile.dataset.type = String(item.telemetryType);
+    tile.addEventListener('click', () => {
+      $('workspace-type').value = tile.dataset.type;
+      $('workspace-type').dispatchEvent(new Event('change'));
+    });
     box.append(tile);
-  }
-}
-
-async function loadTiles(box, device) {
-  try {
-    const r = await api('GET', '/api/devices/' + encodeURIComponent(device.deviceId) + '/telemetry/latest');
-    if (!box.isConnected) return;   // карточку уже перерисовали
-    if (r.status === 200 && Array.isArray(r.data)) {
-      renderTiles(box, device, r.data);
-    } else if (!box.children.length) {
-      renderTiles(box, device, []);
-    }
-  } catch (err) {
-    console.error(err);   // при обновлении по таймеру ошибки не показываем тостом
-    if (box.isConnected && !box.children.length) renderTiles(box, device, []);
   }
 }
 
@@ -694,10 +1039,8 @@ function startTilesPolling() {
   stopTilesPolling();
   tilesTimer = setInterval(() => {
     if (document.hidden || views.devices.hidden) return;
-    document.querySelectorAll('#devices-grid .tiles').forEach((box) => {
-      const d = devState.items.find((x) => x.deviceId === box.dataset.deviceId);
-      if (d) loadTiles(box, d);
-    });
+    const device = activeDevice();
+    if (device) refreshWorkspace(device);
   }, TILES_REFRESH_MS);
 }
 function stopTilesPolling() {
@@ -740,6 +1083,7 @@ $('more-btn').addEventListener('click', () => loadDevices(true));
 
 /* создание устройства: только название и производитель, остальное скрыто */
 $('add-device-btn').addEventListener('click', () => {
+  if (selectedRoom()) { openRoomPicker(); return; }
   $('add-form').reset();
   setMessage($('add-message'), '');
   $('add-dialog').showModal();
@@ -781,12 +1125,11 @@ $('add-form').addEventListener('submit', async (e) => {
 });
 
 /* карточка устройства */
-function renderDeviceDialog(d) {
+function renderDeviceDetails(d) {
   currentDevice = d;
   $('dd-title').textContent = dash(d.name);
   fillKv($('dd-card'), [
     ['ID', { text: d.deviceId, copy: true }],
-    ['Состояние', dash(d.state)],
     ['Заряд', d.batteryLevel === null || d.batteryLevel === undefined ? '—' : d.batteryLevel + '%'],
     ['Производитель', dash(d.manufacturer)],
     ['Геолокация', dash(d.geolocation)],
@@ -794,48 +1137,22 @@ function renderDeviceDialog(d) {
   ]);
 }
 
-async function openDevice(id) {
-  try {
-    const r = await api('GET', '/api/devices/' + encodeURIComponent(id));
-    if (r.status === 200 && r.data) {
-      renderDeviceDialog(r.data);
-      $('device-dialog').showModal();
-    } else if (r.status === 404) {
-      toast('Устройство не найдено', true);
-      loadDevices();
-    } else {
-      console.error('Открытие устройства: ответ', r.status);
-      toast(formatErrors(r.data, 'Не удалось загрузить устройство'), true);
-    }
-  } catch (err) {
-    fail(err);
-  }
+function hideInspector() {
+  workspace.inspectorTicket++;
+  const dialog = $('device-settings');
+  if (dialog.open) dialog.close();
 }
 
-$('dd-close').addEventListener('click', () => $('device-dialog').close());
-
-// УБРАНО: ручное переключение состояния (кнопка «Изменить состояние»). Состояние управляется автоматически.
-
-$('dd-status').addEventListener('click', async () => {
-  if (!currentDevice) return;
-  try {
-    const r = await api('GET', '/api/notifications/devices/' +
-      encodeURIComponent(currentDevice.deviceId) + '/status');
-    if (r.status === 200 && r.data) {
-      toast('Статус отправлен: ' + dash(r.data.state));
-    } else {
-      console.error('Отправка статуса: ответ', r.status);
-      toast(formatErrors(r.data, 'Не удалось отправить статус'), true);
-    }
-  } catch (err) {
-    fail(err);
-  }
+$('device-settings').addEventListener('cancel', event => {
+  event.preventDefault();
+  hideInspector();
 });
+$('dd-close').addEventListener('click', hideInspector);
 
 $('dd-delete').addEventListener('click', async () => {
   if (!currentDevice) return;
   const ok = await deleteDevice(currentDevice.deviceId, currentDevice.name);
-  if (ok) $('device-dialog').close();
+  if (ok) hideInspector();
 });
 
 /* ---------------- настройки (лимиты) устройства ---------------- */
@@ -871,9 +1188,16 @@ function updateLimitsEmpty() {
 function addLimitRow(limit = {}, isNew = true) {
   const rowEl = document.createElement('div');
   rowEl.className = 'limit-row';
-  const type = limitInput('Тип', 'Тип телеметрии', limit.telemetryType, 'numeric');
-  type.setAttribute('list', 'st-types');   // подсказки из TELEMETRY_TYPES
-  if (!isNew) type.readOnly = true;
+  const type = document.createElement('select');
+  type.setAttribute('aria-label', 'Тип телеметрии');
+  type.add(new Option('Выберите тип', ''));
+  const types = new Set(Object.keys(TELEMETRY_TYPES));
+  if (limit.telemetryType != null) types.add(String(limit.telemetryType));
+  for (const id of types) {
+    const info = typeInfo(id);
+    type.add(new Option(info.unit ? info.name + ' · ' + info.unit : info.name, id));
+  }
+  type.value = limit.telemetryType == null ? '' : String(limit.telemetryType);
   const lower = limitInput('—', 'Нижняя граница', limit.lowerBound, 'decimal');
   const upper = limitInput('—', 'Верхняя граница', limit.upperBound, 'decimal');
 
@@ -891,10 +1215,9 @@ function addLimitRow(limit = {}, isNew = true) {
   if (isNew) type.focus();
 }
 
-function fillSettings(data, device) {
+function fillSettings(data) {
   const battery = data.batteryLimit ?? data.batteryLowerBound;
   const telemetry = data.telemetryLimits ?? data.telemetry ?? [];
-  $('st-title').textContent = 'Настройки: ' + dash(device.name);
   $('st-battery').value = battery === null || battery === undefined ? '' : String(battery);
   $('st-list').replaceChildren();
   for (const l of telemetry) addLimitRow(l, false);
@@ -903,29 +1226,44 @@ function fillSettings(data, device) {
 }
 
 async function openSettings(device) {
+  const ticket = ++workspace.inspectorTicket;
+  settingsDevice = null;
+  renderDeviceDetails(device);
+  $('settings-form').hidden = true;
+  setMessage($('settings-load'), 'Загружаем пороги…', 'ok');
+  const dialog = $('device-settings');
+  dialog.showModal();
+  dialog.scrollTop = 0;
+  const path = '/api/devices/' + encodeURIComponent(device.deviceId);
+  const isCurrent = () => dialog.open && ticket === workspace.inspectorTicket;
+  api('GET', path).then(response => {
+    if (isCurrent() && response.ok && response.data) renderDeviceDetails(response.data);
+  }).catch(error => console.error('Загрузка сведений об устройстве', error));
   try {
-    const r = await api('GET', '/api/devices/' + encodeURIComponent(device.deviceId) + '/limits');
-    if (r.status === 200 && r.data) {
+    const r = await api('GET', path + '/limits');
+    if (!isCurrent()) return;
+    if (r.ok && r.data) {
       settingsDevice = device;
-      fillSettings(r.data, device);
-      $('settings-dialog').showModal();
-    } else if (r.status === 404) {
-      toast('Устройство не найдено', true);
+      fillSettings(r.data);
+      setMessage($('settings-load'), '');
+      $('settings-form').hidden = false;
     } else {
-      console.error('Загрузка лимитов: ответ', r.status);
-      toast(formatErrors(r.data, 'Не удалось загрузить настройки'), true);
+      setMessage($('settings-load'), formatErrors(r.data, 'Не удалось загрузить пороги'));
     }
-  } catch (err) {
-    fail(err);
+  } catch (error) {
+    console.error(error);
+    if (isCurrent()) setMessage($('settings-load'), 'Не удалось загрузить пороги');
   }
 }
 
 $('st-add').addEventListener('click', () => addLimitRow({}, true));
-$('st-cancel').addEventListener('click', () => $('settings-dialog').close());
+$('st-cancel').addEventListener('click', hideInspector);
 
 $('settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!settingsDevice) return;
+  const editedDevice = settingsDevice;
+  const ticket = workspace.inspectorTicket;
 
   const battery = parseOptional($('st-battery').value);
   if (battery !== null && (!Number.isInteger(battery) || battery < 0 || battery > 100)) {
@@ -936,26 +1274,27 @@ $('settings-form').addEventListener('submit', async (e) => {
   const telemetryLimits = [];
   const seen = new Set();
   for (const rowEl of $('st-list').children) {
-    const [typeIn, lowerIn, upperIn] = rowEl.querySelectorAll('input');
+    const typeIn = rowEl.querySelector('select');
+    const [lowerIn, upperIn] = rowEl.querySelectorAll('input');
     const lower = parseOptional(lowerIn.value);
     const upper = parseOptional(upperIn.value);
     if (typeIn.value.trim() === '' && lower === null && upper === null) continue; // пустая строка
     const type = parseOptional(typeIn.value);
     if (type === null || !Number.isInteger(type) || type < -32768 || type > 32767) {
-      setMessage($('st-message'), 'Тип телеметрии должен быть целым числом');
+      setMessage($('st-message'), 'Выберите тип телеметрии');
       return;
     }
     if (seen.has(type)) {
-      setMessage($('st-message'), `Тип ${type} указан дважды`);
+      setMessage($('st-message'), `Тип «${typeInfo(type).name}» указан дважды`);
       return;
     }
     seen.add(type);
     if ((lower !== null && !Number.isFinite(lower)) || (upper !== null && !Number.isFinite(upper))) {
-      setMessage($('st-message'), `Тип ${type}: границы должны быть числами или «—»`);
+      setMessage($('st-message'), `${typeInfo(type).name}: границы должны быть числами или «—»`);
       return;
     }
     if (lower !== null && upper !== null && lower > upper) {
-      setMessage($('st-message'), `Тип ${type}: нижняя граница больше верхней`);
+      setMessage($('st-message'), `${typeInfo(type).name}: нижняя граница больше верхней`);
       return;
     }
     telemetryLimits.push({ telemetryType: type, lowerBound: lower, upperBound: upper });
@@ -972,10 +1311,12 @@ $('settings-form').addEventListener('submit', async (e) => {
 
   try {
     const r = await api('PUT',
-      '/api/devices/' + encodeURIComponent(settingsDevice.deviceId) + '/limits', body);
+      '/api/devices/' + encodeURIComponent(editedDevice.deviceId) + '/limits', body);
+    if (ticket !== workspace.inspectorTicket || !$('device-settings').open) return;
     if (r.status === 200 && r.data) {
-      fillSettings(r.data, settingsDevice);
-      $('settings-dialog').close();
+      fillSettings(r.data);
+      workspace.limits = r.data.telemetryLimits ?? r.data.telemetry ?? [];
+      refreshWorkspaceChart();
       toast('Настройки сохранены');
     } else {
       console.error('Сохранение лимитов: ответ', r.status, r.data);
@@ -989,42 +1330,73 @@ $('settings-form').addEventListener('submit', async (e) => {
 /* ---------------- профиль ---------------- */
 
 function showProfileMode(editing) {
-  $('profile-card').hidden = editing;
-  $('profile-actions').hidden = editing;
+  const hasData = currentUser?.id === getUserId();
+  $('profile-card').hidden = editing || !hasData;
+  $('profile-actions').hidden = editing || !hasData;
   $('profile-form').hidden = !editing;
+  $('change-password').disabled = !hasData;
+  $('delete-account').disabled = !hasData;
 }
 
-function renderProfile(u) {
-  fillKv($('profile-card'), [
-    ['ID', { text: u.id, copy: true }],
-    ['Email', dash(u.email)],
-    ['Имя пользователя', dash(u.username)],
-    ['Телефон', dash(u.phone)],
-    ['Дата рождения', formatBirthDate(u.dateOfBirth)],
-    ['Роль', dash(u.role)]
+function renderProfile(user) {
+  const name = user.username || user.email || 'Ваш аккаунт';
+  $('profile-display-name').textContent = name;
+  $('profile-display-email').textContent = user.email || '';
+  $('profile-initial').textContent = [...name.trim()][0]?.toLocaleUpperCase() || '?';
+  const fields = [
+    ['Имя пользователя', user.username || 'Не указано', 'user'],
+    ['Электронная почта', user.email || 'Не указана', 'mail'],
+    ['Телефон', user.phone || 'Не указан', 'phone'],
+    ['Дата рождения', user.dateOfBirth ? formatBirthDate(user.dateOfBirth) : 'Не указана', 'calendar']
+  ];
+  $('profile-card').replaceChildren(...fields.map(([label, value, iconName]) => {
+    const tile = document.createElement('div');
+    const term = document.createElement('dt');
+    const definition = document.createElement('dd');
+    term.textContent = label;
+    definition.textContent = value;
+    tile.append(icon(iconName), term, definition);
+    return tile;
+  }));
+  fillKv($('profile-meta-card'), [
+    ['ID', { text: user.id, copy: true }],
+    ['Роль', user.role === 'ADMIN' ? 'Администратор' : 'Пользователь']
   ]);
+  $('profile-meta').hidden = false;
 }
 
 async function loadProfile() {
-  showProfileMode(false);
-  setMessage($('profile-message'), '');
   const userId = getUserId();
   if (!userId) { openAuth(); return; }
+  if (currentUser?.id === userId) renderProfile(currentUser);
+  else {
+    $('profile-display-name').textContent = 'Ваш аккаунт';
+    $('profile-display-email').textContent = '';
+    $('profile-initial').textContent = '?';
+    $('profile-meta').hidden = true;
+  }
+  showProfileMode(false);
+  setMessage($('profile-message'), '');
+  const status = $('profile-load-status');
+  setMessage(status, 'Загружаем профиль…', 'ok');
   try {
     const r = await api('GET', '/api/users/' + encodeURIComponent(userId));
-    if (r.status === 200 && r.data) {
+    if (getUserId() !== userId) return;
+    if (r.ok && r.data) {
       currentUser = r.data;
       applyRole();
       renderProfile(currentUser);
+      showProfileMode(!$('profile-form').hidden);
+      setMessage(status, '');
     } else if (r.status === 404) {
       logout();
       toast('Пользователь не найден', true);
     } else {
-      console.error('Профиль: ответ', r.status);
-      toast(formatErrors(r.data, 'Не удалось загрузить профиль'), true);
+      setMessage(status, formatErrors(r.data, 'Не удалось загрузить профиль'));
     }
   } catch (err) {
-    fail(err);
+    console.error(err);
+    if (getUserId() === userId) setMessage(status, 'Не удалось загрузить профиль');
   }
 }
 
@@ -1034,13 +1406,11 @@ $('edit-profile').addEventListener('click', () => {
   $('prof-phone').value = currentUser.phone ?? '';
   $('prof-dob').value = currentUser.dateOfBirth ?? '';
   $('prof-dob').max = new Date().toISOString().slice(0, 10);
-  $('prof-password').value = '';
   setMessage($('profile-message'), '');
   showProfileMode(true);
 });
 
 $('profile-cancel').addEventListener('click', () => {
-  $('prof-password').value = '';
   showProfileMode(false);
 });
 
@@ -1054,12 +1424,17 @@ $('profile-form').addEventListener('submit', async (e) => {
   const username = $('prof-username').value.trim();
   const phone = $('prof-phone').value.trim();
   const dob = $('prof-dob').value;
-  const password = $('prof-password').value;
 
   if (username && username !== (currentUser.username ?? '')) body.username = username;
-  if (phone && phone !== (currentUser.phone ?? '')) body.phone = phone;
+  if (phone && phone !== (currentUser.phone ?? '')) {
+    if (!/^\+?[0-9]{11}$/.test(phone)) {
+      setMessage($('profile-message'), 'Телефон должен содержать 11 цифр и может начинаться с «+»');
+      $('prof-phone').focus();
+      return;
+    }
+    body.phone = phone;
+  }
   if (dob && dob !== (currentUser.dateOfBirth ?? '')) body.dateOfBirth = dob;
-  if (password) body.password = password;
 
   if (Object.keys(body).length === 0) {
     setMessage($('profile-message'), 'Нет изменений для сохранения');
@@ -1068,10 +1443,10 @@ $('profile-form').addEventListener('submit', async (e) => {
 
   try {
     const r = await api('PUT', '/api/users/' + encodeURIComponent(userId), body);
-    $('prof-password').value = '';
-    if (r.status === 200 && r.data) {
+      if (r.status === 200 && r.data) {
       currentUser = r.data;
       renderProfile(currentUser);
+      setUserEmail(currentUser.email);
       showProfileMode(false);
       toast('Данные сохранены');
     } else if (r.status === 400) {
@@ -1104,291 +1479,6 @@ $('delete-account').addEventListener('click', async () => {
     fail(err);
   }
 });
-
-/* ==========================================================================
-   НОВОЕ: модалка телеметрии (график реального времени, норма, средние)
-   ========================================================================== */
-
-const TM_POLL_MS = 5000;   // график опрашивает сервер каждые 5 секунд
-const TM_POINTS = 60;      // сколько последних показаний рисуем
-const tm = { device: null, type: null, lower: null, upper: null, points: [], timer: null, ticket: 0, geom: null };
-
-const isOut = (v) => (tm.lower !== null && v < tm.lower) || (tm.upper !== null && v > tm.upper);
-
-async function openTelemetry(device, type) {
-  const info = typeInfo(type);
-  tm.device = device;
-  tm.type = type;
-  tm.lower = null;
-  tm.upper = null;
-  tm.points = [];
-  tm.geom = null;
-
-  $('tm-ico').replaceChildren(icon(info.icon));
-  $('tm-title').textContent = info.name + (info.unit ? ', ' + info.unit : '');
-  $('tm-sub').textContent = 'Устройство: ' + dash(device.name) + ', тип ' + type;
-  $('tm-current').textContent = '—';
-  $('tm-current-note').textContent = '';
-  $('tm-avg-hour').textContent = '—';
-  $('tm-avg-hour-note').textContent = '';
-  $('tm-tip').hidden = true;
-  updateNormStat();
-  $('tm-since').value = toLocalInput(new Date(Date.now() - 3600 * 1000));
-  setMessage($('tm-since-result'), '');
-
-  $('tm-dialog').showModal();
-  renderChart();
-  await loadChartLimits();
-  await refreshTelemetry();
-  if (!$('tm-dialog').open) return;   // пока грузилось, окно закрыли
-  clearInterval(tm.timer);
-  tm.timer = setInterval(refreshTelemetry, TM_POLL_MS);
-}
-
-function closeTelemetry() {
-  clearInterval(tm.timer);
-  tm.timer = null;
-  tm.ticket++;   // ответы запросов, которые ещё в пути, будут отброшены
-}
-
-$('tm-dialog').addEventListener('close', closeTelemetry);
-$('tm-close').addEventListener('click', () => $('tm-dialog').close());
-
-/** Границы нормы берём из тех же настроек устройства, что и в окне «Настройки». */
-async function loadChartLimits() {
-  try {
-    const r = await api('GET', '/api/devices/' + encodeURIComponent(tm.device.deviceId) + '/limits');
-    if (r.status === 200 && r.data) {
-      const list = r.data.telemetryLimits ?? r.data.telemetry ?? [];
-      const mine = list.find((l) => Number(l.telemetryType) === Number(tm.type));
-      tm.lower = mine && mine.lowerBound !== null && mine.lowerBound !== undefined ? Number(mine.lowerBound) : null;
-      tm.upper = mine && mine.upperBound !== null && mine.upperBound !== undefined ? Number(mine.upperBound) : null;
-    }
-  } catch (err) {
-    console.error(err);
-  }
-  updateNormStat();
-}
-
-function updateNormStat() {
-  const unit = typeInfo(tm.type).unit;
-  let text = 'не задана';
-  if (tm.lower !== null && tm.upper !== null) text = `${fmtNum(tm.lower)} … ${fmtValue(tm.upper, unit)}`;
-  else if (tm.lower !== null) text = 'от ' + fmtValue(tm.lower, unit);
-  else if (tm.upper !== null) text = 'до ' + fmtValue(tm.upper, unit);
-  $('tm-norm').textContent = text;
-  $('tm-norm-note').textContent = tm.lower === null && tm.upper === null ? 'Задаётся в настройках устройства' : '';
-}
-
-async function refreshTelemetry() {
-  if (!$('tm-dialog').open) return;
-  const ticket = ++tm.ticket;
-  const id = encodeURIComponent(tm.device.deviceId);
-  const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
-  try {
-    const [series, avg] = await Promise.all([
-      api('GET', `/api/devices/${id}/telemetry?type=${tm.type}&limit=${TM_POINTS}`),
-      api('GET', `/api/devices/${id}/telemetry/average?type=${tm.type}&since=${encodeURIComponent(hourAgo)}`)
-    ]);
-    if (ticket !== tm.ticket || !$('tm-dialog').open) return;   // устаревший ответ
-    if (series.status === 200 && Array.isArray(series.data)) {
-      tm.points = series.data
-        .map((p) => ({ t: toDate(p.time).getTime(), v: Number(p.value) }))
-        .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v));
-      updateCurrent();
-      renderChart();
-    }
-    if (avg.status === 200 && avg.data) updateHourAverage(avg.data);
-  } catch (err) {
-    console.error(err);   // опрос идёт в фоне: тостами не спамим
-  }
-}
-
-function updateCurrent() {
-  const unit = typeInfo(tm.type).unit;
-  const last = tm.points[tm.points.length - 1];
-  const box = $('tm-current').parentElement;
-  if (!last) {
-    $('tm-current').textContent = '—';
-    $('tm-current-note').textContent = 'Показаний пока нет';
-    box.classList.remove('out');
-    return;
-  }
-  $('tm-current').textContent = fmtValue(last.v, unit);
-  $('tm-current-note').textContent = isOut(last.v) ? 'Вне нормы, ' + timeAgo(new Date(last.t)) : timeAgo(new Date(last.t));
-  box.classList.toggle('out', isOut(last.v));
-}
-
-function updateHourAverage(data) {
-  const unit = typeInfo(tm.type).unit;
-  if (data.average === null || data.average === undefined) {
-    $('tm-avg-hour').textContent = '—';
-    $('tm-avg-hour-note').textContent = 'За последний час показаний нет';
-    return;
-  }
-  $('tm-avg-hour').textContent = fmtValue(Number(data.average), unit);
-  const n = Number(data.count) || 0;
-  $('tm-avg-hour-note').textContent = `по ${n} ${plural(n, 'показанию', 'показаниям', 'показаниям')}`;
-}
-
-/* среднее с выбранного времени */
-$('tm-since-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const out = $('tm-since-result');
-  const value = $('tm-since').value;
-  if (!value) { setMessage(out, 'Укажите время'); return; }
-  const since = new Date(value);   // datetime-local трактуется в часовом поясе браузера
-  if (Number.isNaN(since.getTime())) { setMessage(out, 'Некорректное время'); return; }
-  if (since.getTime() > Date.now()) { setMessage(out, 'Время не может быть в будущем'); return; }
-
-  try {
-    const r = await api('GET', '/api/devices/' + encodeURIComponent(tm.device.deviceId) +
-      `/telemetry/average?type=${tm.type}&since=${encodeURIComponent(since.toISOString())}`);
-    if (r.status === 200 && r.data) {
-      const unit = typeInfo(tm.type).unit;
-      const from = since.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
-      if (r.data.average === null || r.data.average === undefined) {
-        setMessage(out, `С ${from} показаний нет`);
-      } else {
-        const n = Number(r.data.count) || 0;
-        setMessage(out, `Среднее с ${from}: ${fmtValue(Number(r.data.average), unit)} (${n} ${plural(n, 'показание', 'показания', 'показаний')})`, 'ok');
-      }
-    } else {
-      setMessage(out, formatErrors(r.data, 'Не удалось получить среднее'));
-    }
-  } catch (err) {
-    fail(err);
-  }
-});
-
-/* ---- график: самодельный SVG, без библиотек ---- */
-
-function axisFormatter(range) {
-  const digits = range >= 20 ? 0 : range >= 2 ? 1 : 2;
-  return (v) => v.toLocaleString('ru-RU', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-
-function renderChart() {
-  const svg = $('tm-chart');
-  const W = Math.max(300, Math.round($('tm-chart-wrap').clientWidth || 640));
-  const H = W < 480 ? 240 : 290;
-  const m = { l: 50, r: 14, t: 16, b: 30 };
-  const pts = tm.points;
-  const unit = typeInfo(tm.type).unit;
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  $('tm-empty').hidden = pts.length > 0;
-
-  // диапазон по Y включает и линии нормы, чтобы они всегда были видны
-  let lo = Infinity, hi = -Infinity;
-  const take = (v) => { if (v !== null && Number.isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); } };
-  pts.forEach((p) => take(p.v));
-  take(tm.lower);
-  take(tm.upper);
-  if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
-  if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
-  const pad = (hi - lo) * 0.12;
-  lo -= pad; hi += pad;
-
-  let t0 = pts.length ? pts[0].t : Date.now() - 3600 * 1000;
-  let t1 = pts.length ? pts[pts.length - 1].t : Date.now();
-  if (t1 - t0 < 60 * 1000) { t0 -= 30 * 60 * 1000; t1 += 30 * 60 * 1000; }   // одна точка: рисуем по центру
-  const X = (t) => m.l + ((t - t0) / (t1 - t0)) * (W - m.l - m.r);
-  const Y = (v) => m.t + (1 - (v - lo) / (hi - lo)) * (H - m.t - m.b);
-  const fmtY = axisFormatter(hi - lo);
-
-  let g = '<defs>'
-    + '<linearGradient id="tm-area" x1="0" y1="0" x2="0" y2="1">'
-    + '<stop offset="0" stop-color="#22e4ff" stop-opacity=".32"/><stop offset="1" stop-color="#22e4ff" stop-opacity="0"/>'
-    + '</linearGradient></defs>';
-
-  // сетка и подписи оси Y
-  for (let i = 0; i <= 4; i++) {
-    const v = lo + ((hi - lo) * i) / 4;
-    const y = Y(v);
-    g += `<line class="ch-grid" x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}"/>`;
-    g += `<text class="ch-axis" x="${m.l - 8}" y="${y + 4}" text-anchor="end">${fmtY(v)}</text>`;
-  }
-  if (unit) g += `<text class="ch-axis" x="${m.l - 8}" y="${m.t - 5}" text-anchor="end">${unit}</text>`;
-
-  // ось X
-  const span = t1 - t0;
-  const ticks = W < 480 ? 3 : 5;
-  for (let i = 0; i < ticks; i++) {
-    const t = t0 + (span * i) / (ticks - 1);
-    const d = new Date(t);
-    const label = span > 24 * 3600 * 1000
-      ? d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-      : d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    const anchor = i === 0 ? 'start' : i === ticks - 1 ? 'end' : 'middle';
-    g += `<text class="ch-axis" x="${X(t)}" y="${H - 8}" text-anchor="${anchor}">${label}</text>`;
-  }
-
-  // линии границ нормы
-  if (tm.upper !== null) {
-    const y = Y(tm.upper);
-    g += `<line class="ch-limit-up" x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}"/>`;
-    g += `<text class="ch-tag-up" x="${W - m.r - 4}" y="${y - 5}" text-anchor="end">верхняя граница ${fmtNum(tm.upper)}</text>`;
-  }
-  if (tm.lower !== null) {
-    const y = Y(tm.lower);
-    g += `<line class="ch-limit-lo" x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}"/>`;
-    g += `<text class="ch-tag-lo" x="${W - m.r - 4}" y="${y + 14}" text-anchor="end">нижняя граница ${fmtNum(tm.lower)}</text>`;
-  }
-
-  // линия, заливка, точки
-  if (pts.length >= 2) {
-    const line = pts.map((p, i) => (i ? 'L' : 'M') + X(p.t).toFixed(1) + ' ' + Y(p.v).toFixed(1)).join(' ');
-    const base = H - m.b;
-    g += `<path d="${line} L${X(pts[pts.length - 1].t).toFixed(1)} ${base} L${X(pts[0].t).toFixed(1)} ${base} Z" fill="url(#tm-area)"/>`;
-    g += `<path class="ch-line" d="${line}"/>`;
-  }
-  pts.forEach((p) => {
-    g += `<circle class="ch-dot${isOut(p.v) ? ' out' : ''}" cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="2.6"/>`;
-  });
-  if (pts.length) {
-    const last = pts[pts.length - 1];
-    g += `<circle class="ch-ring" cx="${X(last.t).toFixed(1)}" cy="${Y(last.v).toFixed(1)}" r="4"/>`;
-    g += `<circle class="ch-last" cx="${X(last.t).toFixed(1)}" cy="${Y(last.v).toFixed(1)}" r="4.5"/>`;
-  }
-  g += `<g id="tm-hover" class="ch-hover" hidden><line y1="${m.t}" y2="${H - m.b}"/><circle r="5"/></g>`;
-
-  svg.innerHTML = g;
-  tm.geom = { W, H, m, X, Y, pts };
-}
-
-// подсказка при наведении: ближайшая точка по оси X
-$('tm-chart').addEventListener('pointermove', (e) => {
-  const g = tm.geom;
-  if (!g || !g.pts.length) return;
-  const rect = $('tm-chart').getBoundingClientRect();
-  const x = ((e.clientX - rect.left) / rect.width) * g.W;
-  let best = g.pts[0], dist = Infinity;
-  for (const p of g.pts) {
-    const d = Math.abs(g.X(p.t) - x);
-    if (d < dist) { dist = d; best = p; }
-  }
-  const cx = g.X(best.t), cy = g.Y(best.v);
-  const hover = $('tm-chart').querySelector('#tm-hover');
-  if (hover) {
-    hover.removeAttribute('hidden');
-    const line = hover.querySelector('line');
-    line.setAttribute('x1', cx); line.setAttribute('x2', cx);
-    const dot = hover.querySelector('circle');
-    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
-  }
-  const tip = $('tm-tip');
-  tip.textContent = fmtValue(best.v, typeInfo(tm.type).unit) + ', ' +
-    new Date(best.t).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'medium' });
-  tip.style.left = Math.min(Math.max((cx / g.W) * 100, 14), 86) + '%';
-  tip.style.top = (cy / g.H) * 100 + '%';
-  tip.hidden = false;
-});
-$('tm-chart').addEventListener('pointerleave', () => {
-  $('tm-tip').hidden = true;
-  const hover = $('tm-chart').querySelector('#tm-hover');
-  if (hover) hover.setAttribute('hidden', '');
-});
-window.addEventListener('resize', () => { if ($('tm-dialog').open) renderChart(); });
 
 /* ==========================================================================
    НОВОЕ: вкладка «Пользователи» (только для админов)
@@ -1672,26 +1762,365 @@ function renderLegend() {
   }
 }
 
-function fillTypesDatalist() {
-  const list = $('st-types');
-  list.replaceChildren();
-  for (const [type, info] of Object.entries(TELEMETRY_TYPES)) {
-    const opt = document.createElement('option');
-    opt.value = type;
-    opt.label = info.name + (info.unit ? ' (' + info.unit + ')' : '');
-    list.append(opt);
+/* ---------------- комнаты ---------------- */
+
+const roomState = { user: null, active: null, rooms: [] };
+let pickerTicket = 0;
+
+function roomStorageKey() {
+  return 'iot-core.rooms.' + roomState.user;
+}
+
+function selectedRoom() {
+  return roomState.rooms.find(room => room.id === roomState.active);
+}
+
+function syncRooms() {
+  const user = getUserId();
+  if (roomState.user !== user) {
+    roomState.user = user;
+    roomState.active = null;
+    roomState.rooms = [];
+    try {
+      roomState.rooms = JSON.parse(localStorage.getItem(roomStorageKey())) ?? [];
+    } catch (error) {
+      fail(error, 'Не удалось прочитать сохранённые группы');
+    }
+  }
+  renderRoomFilters();
+}
+
+function saveRooms(rooms) {
+  localStorage.setItem(roomStorageKey(), JSON.stringify(rooms));
+  roomState.rooms = rooms;
+}
+
+function removeRoomDevice(room, device) {
+  if (roomState.active !== room.id) return;
+  const current = selectedRoom();
+  if (!current?.devices.includes(device.deviceId)) return;
+  try {
+    const updated = {...current, devices: current.devices.filter(id => id !== device.deviceId)};
+    saveRooms(roomState.rooms.map(item => item.id === room.id ? updated : item));
+    devState.ticket++;
+    devState.items = devState.items.filter(item => item.deviceId !== device.deviceId);
+    renderDevices();
+    const next = $('devices-grid').querySelector('[aria-pressed="true"]') ?? $('add-device-btn');
+    next.focus({preventScroll: true});
+    toast('Устройство убрано из группы');
+  } catch (error) {
+    fail(error, 'Не удалось убрать устройство из группы');
   }
 }
+
+function selectRoom(id) {
+  roomState.active = id;
+  $('search-input').value = '';
+  $('search-clear').hidden = true;
+  clearTimeout(searchTimer);
+  devState.search = null;
+  renderRoomFilters(id);
+  loadDevices();
+}
+
+function renderRoomFilters(focusId) {
+  const filters = $('room-filters');
+  filters.replaceChildren();
+  for (const room of [{id: null, name: 'Все устройства'}, ...roomState.rooms]) {
+    const active = room.id === roomState.active;
+    const button = actionButton(room.name, 'room-filter', () => selectRoom(room.id));
+    button.setAttribute('aria-pressed', String(active));
+    const chip = document.createElement('div');
+    chip.className = 'room-chip';
+    chip.append(button);
+    if (room.id !== null) {
+      const remove = actionButton('', 'room-remove', () => removeRoom(room), 'x');
+      remove.setAttribute('aria-label', 'Удалить группу «' + room.name + '»');
+      remove.title = 'Удалить группу';
+      chip.append(remove);
+    }
+    filters.append(chip);
+    if (focusId === room.id) button.focus({preventScroll: true});
+  }
+
+  const add = $('add-device-btn');
+  const inRoom = Boolean(selectedRoom());
+  add.replaceChildren(icon('plus'));
+  if (!inRoom) add.append(document.createTextNode('Добавить'));
+  add.setAttribute('aria-label', inRoom ? 'Добавить устройства в группу' : 'Добавить устройство');
+  add.title = add.getAttribute('aria-label');
+}
+
+function removeRoom(room) {
+  if (!confirm('Удалить группу «' + room.name + '»? Устройства останутся в общем списке.')) return;
+  try {
+    saveRooms(roomState.rooms.filter(item => item.id !== room.id));
+  } catch (error) {
+    fail(error, 'Не удалось удалить группу');
+    return;
+  }
+
+  if (roomState.active === room.id) selectRoom(null);
+  else renderRoomFilters(roomState.active);
+}
+
+async function readDeviceCatalogue(userId, isCurrent) {
+  const devices = new Map();
+  const limit = PAGE_SIZE + 1;
+  for (let offset = 0; isCurrent(); offset += limit) {
+    const params = new URLSearchParams({userId, limit: String(limit), offset: String(offset)});
+    const r = await api('GET', '/api/devices?' + params);
+    if (!r.ok || !Array.isArray(r.data)) throw new Error('Ответ списка устройств: ' + r.status);
+    const count = devices.size;
+    for (const device of r.data) devices.set(device.deviceId, device);
+    if (r.data.length < limit || devices.size === count) break;
+  }
+  return [...devices.values()];
+}
+
+$('new-room-btn').addEventListener('click', () => {
+  $('new-room-form').reset();
+  setMessage($('room-name-message'), '');
+  $('new-room-dialog').showModal();
+});
+$('new-room-cancel').addEventListener('click', () => $('new-room-dialog').close());
+$('new-room-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const name = $('room-name').value.trim();
+  const message = $('room-name-message');
+  if (!name) {
+    setMessage(message, 'Введите название группы');
+    return;
+  }
+  if (['Все устройства', ...roomState.rooms.map(room => room.name)]
+    .some(existing => existing.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    setMessage(message, 'Это название уже используется');
+    return;
+  }
+  try {
+    const room = {id: crypto.randomUUID(), name, devices: []};
+    saveRooms([...roomState.rooms, room]);
+    $('new-room-dialog').close();
+    selectRoom(room.id);
+  } catch (error) {
+    console.error(error);
+    setMessage(message, 'Не удалось сохранить группу в браузере');
+  }
+});
+
+function filterRoomPicker() {
+  const query = $('room-picker-search').value.trim().toLocaleLowerCase();
+  const list = $('room-picker-list');
+  let found = false;
+  for (const row of list.children) {
+    row.hidden = !row.dataset.deviceName.includes(query);
+    if (!row.hidden) found = true;
+  }
+  $('room-picker-no-matches').hidden = !query || found;
+  list.scrollTop = 0;
+}
+
+$('room-picker-search').addEventListener('input', filterRoomPicker);
+$('room-picker-search').addEventListener('keydown', event => {
+  if (event.key === 'Enter') event.preventDefault();
+});
+
+async function openRoomPicker() {
+  const room = selectedRoom();
+  if (!room) return;
+  const user = getUserId();
+  const dialog = $('room-picker');
+  const ticket = ++pickerTicket;
+  const list = $('room-picker-list');
+  const message = $('room-picker-message');
+  const isCurrent = () => ticket === pickerTicket && dialog.open && getUserId() === user;
+  $('room-picker-title').textContent = 'Добавить устройства · ' + room.name;
+  const search = $('room-picker-search');
+  search.value = '';
+  search.disabled = true;
+  $('room-picker-no-matches').hidden = true;
+  list.replaceChildren();
+  $('room-picker-submit').disabled = true;
+  setMessage(message, 'Загружаем устройства…', 'ok');
+  dialog.showModal();
+  try {
+    const devices = await readDeviceCatalogue(user, isCurrent);
+    if (!isCurrent()) return;
+    const existing = new Set(room.devices);
+    for (const device of devices) {
+      if (existing.has(device.deviceId)) continue;
+      const label = document.createElement('label');
+      label.dataset.deviceName = dash(device.name).toLocaleLowerCase();
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = device.deviceId;
+      const caption = document.createElement('span');
+      const id = document.createElement('small');
+      id.textContent = device.deviceId;
+      caption.append(document.createTextNode(dash(device.name)), id);
+      label.append(input, caption);
+      list.append(label);
+    }
+    search.disabled = list.children.length === 0;
+    setMessage(message, search.disabled ? 'Нет устройств для добавления' : '', 'ok');
+  } catch (error) {
+    console.error(error);
+    if (isCurrent()) setMessage(message, 'Не удалось загрузить устройства');
+  }
+}
+
+$('empty-room-add').addEventListener('click', openRoomPicker);
+$('room-picker-cancel').addEventListener('click', () => $('room-picker').close());
+$('room-picker-list').addEventListener('change', () => {
+  $('room-picker-submit').disabled = !$('room-picker-list').querySelector(':checked');
+});
+$('room-picker-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const room = selectedRoom();
+  const ids = [...$('room-picker-list').querySelectorAll(':checked')].map(input => input.value);
+  if (!room || !ids.length) return;
+  try {
+    const updated = {...room, devices: [...new Set([...room.devices, ...ids])]};
+    saveRooms(roomState.rooms.map(item => item.id === room.id ? updated : item));
+    $('room-picker').close();
+    loadDevices();
+  } catch (error) {
+    console.error(error);
+    setMessage($('room-picker-message'), 'Не удалось сохранить устройства группы');
+  }
+});
+
+/* ---------------- восстановление и смена пароля ---------------- */
+
+let resetToken = null;
+
+$('forgot-password').addEventListener('click', () => {
+  const form = $('recovery-form');
+  form.reset();
+  $('recovery-email').value = $('auth-email').value.trim();
+  setMessage($('recovery-message'), '');
+  $('recovery-dialog').showModal();
+});
+$('recovery-cancel').addEventListener('click', () => $('recovery-dialog').close());
+$('recovery-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const submit = event.currentTarget.querySelector('[type=submit]');
+  const message = $('recovery-message');
+  submit.disabled = true;
+  try {
+    const result = await api('POST', '/api/password/request', {email: $('recovery-email').value.trim()});
+    setMessage(message, result.ok
+      ? 'Если аккаунт с такой почтой существует, мы отправим ссылку для восстановления.'
+      : formatErrors(result.data, 'Не удалось запросить восстановление'), result.ok ? 'ok' : 'error');
+  } catch (error) {
+    console.error(error);
+    setMessage(message, 'Не удалось запросить восстановление');
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+function openPasswordDialog(token = null) {
+  resetToken = token;
+  $('password-form').reset();
+  $('password-title').textContent = token ? 'Задать новый пароль' : 'Изменить пароль';
+  $('current-password-field').hidden = Boolean(token);
+  $('current-password').required = !token;
+  setMessage($('password-message'), '');
+  $('password-dialog').showModal();
+}
+
+$('change-password').addEventListener('click', () => openPasswordDialog());
+$('password-cancel').addEventListener('click', () => $('password-dialog').close());
+$('password-dialog').addEventListener('close', () => {
+  $('password-form').reset();
+  resetToken = null;
+});
+$('password-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const password = $('new-password').value;
+  const message = $('password-message');
+  if (password.length < 8 || password.length > 256) {
+    setMessage(message, 'Пароль должен содержать от 8 до 256 символов');
+    return;
+  }
+  if (password !== $('repeat-password').value) {
+    setMessage(message, 'Пароли не совпадают');
+    $('repeat-password').focus();
+    return;
+  }
+  const token = resetToken;
+  const userId = getUserId();
+  if (!token && !userId) return;
+  const submit = event.currentTarget.querySelector('[type=submit]');
+  submit.disabled = true;
+  try {
+    const result = token
+      ? await api('POST', '/api/password/reset', {token, password})
+      : await api('PUT', '/api/users/' + encodeURIComponent(userId) + '/password',
+          {currentPassword: $('current-password').value, password});
+    if (result.ok) {
+      $('password-dialog').close();
+      if (token) logout();
+      toast('Пароль изменён');
+    } else {
+      setMessage(message, formatErrors(result.data, 'Не удалось изменить пароль'));
+    }
+  } catch (error) {
+    console.error(error);
+    setMessage(message, 'Не удалось изменить пароль');
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+$('edit-manufacturer').addEventListener('click', () => {
+  if (!currentDevice) return;
+  $('manufacturer-value').value = currentDevice.manufacturer ?? '';
+  setMessage($('manufacturer-message'), '');
+  $('manufacturer-dialog').showModal();
+});
+$('manufacturer-cancel').addEventListener('click', () => $('manufacturer-dialog').close());
+$('manufacturer-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const id = currentDevice?.deviceId;
+  const userId = getUserId();
+  if (!id || !userId) return;
+  const submit = event.currentTarget.querySelector('[type=submit]');
+  const message = $('manufacturer-message');
+  submit.disabled = true;
+  try {
+    const result = await api('PUT', '/api/devices/' + encodeURIComponent(id) + '/manufacturer',
+      {userId, manufacturer: $('manufacturer-value').value.trim()});
+    if (result.ok && result.data && getUserId() === userId) {
+      if (currentDevice?.deviceId === id) renderDeviceDetails(result.data);
+      replaceInList(result.data);
+      $('manufacturer-dialog').close();
+      toast('Производитель обновлён');
+    } else {
+      setMessage(message, formatErrors(result.data, 'Не удалось изменить производителя'));
+    }
+  } catch (error) {
+    console.error(error);
+    setMessage(message, 'Не удалось изменить производителя');
+  } finally {
+    submit.disabled = false;
+  }
+});
 
 /* ---------------- старт ---------------- */
 
 $('about-text').textContent = ABOUT_TEXT;
 $('telegram-link').href = TELEGRAM_BOT_URL;
 renderLegend();        // НОВОЕ: таблица типов телеметрии на вкладке «Описание»
-fillTypesDatalist();   // НОВОЕ: подсказки типов в окне настроек
 initChannels();        // НОВОЕ: окна Email и Telegram на вкладке «Уведомления»
 
-if (getUserId()) {
+const recoveryLink = new URLSearchParams(location.hash.slice(1)).get('reset');
+if (recoveryLink) {
+  history.replaceState(null, '', location.pathname + location.search);
+  showScreen('auth');
+  openPasswordDialog(recoveryLink);
+} else if (getUserId()) {
   enterMain();
 } else if (sessionStorage.getItem('pendingUserId')) {
   // страницу обновили посреди подтверждения: возвращаем на экран 2
